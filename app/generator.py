@@ -705,7 +705,106 @@ def _normalize_lesson_pack_data(data: dict[str, Any], language: Language = "zh-H
         cards.append(card)
 
     normalized["bug_cards"] = cards
-    return _repair_bug_cards_for_code(normalized, language)
+    repaired = _repair_bug_cards_for_code(normalized, language)
+    return _repair_code_location_line_numbers(repaired, repaired.get("buggy_code", ""))
+
+
+def _repair_code_location_line_numbers(normalized: dict[str, Any], code: str) -> dict[str, Any]:
+    """Align each bug card's code_location line number with where its related_code_snippet
+    actually appears in buggy_code. AI models often miscount lines; the snippet is the
+    ground truth because the prompt requires it to be copied exactly from buggy_code."""
+    buggy_lines = code.splitlines()
+    if not buggy_lines:
+        return normalized
+
+    cards = list(normalized.get("bug_cards") or [])
+    changed = False
+
+    for card in cards:
+        snippet = _as_string(card.get("related_code_snippet")).strip()
+        if not snippet:
+            continue
+
+        snippet_lines = [ln.strip() for ln in snippet.splitlines() if ln.strip()]
+        if not snippet_lines:
+            continue
+
+        actual_line_no = _find_snippet_line_number(buggy_lines, snippet_lines[0])
+        if actual_line_no <= 0:
+            continue
+
+        code_location = _as_string(card.get("code_location"))
+        stated_nos = _stated_line_numbers(code_location)
+
+        if stated_nos and any(no == actual_line_no for no in stated_nos):
+            continue  # at least one stated line is correct
+
+        if stated_nos:
+            new_loc = _replace_first_line_number(code_location, stated_nos[0], actual_line_no)
+        else:
+            is_chinese = any("一" <= ch <= "鿿" for ch in code_location) or not code_location
+            if is_chinese:
+                new_loc = f"第{actual_line_no}行：{snippet_lines[0]}"
+            else:
+                new_loc = f"line {actual_line_no}: {snippet_lines[0]}"
+
+        card["code_location"] = new_loc
+        changed = True
+
+    if changed:
+        normalized = dict(normalized)
+        normalized["bug_cards"] = cards
+    return normalized
+
+
+def _find_snippet_line_number(buggy_lines: list[str], snippet: str) -> int:
+    """Return the 1-indexed line number where `snippet` first appears in buggy_lines."""
+    target = snippet.strip()
+    if not target:
+        return 0
+    for index, line in enumerate(buggy_lines, start=1):
+        if line.strip() == target:
+            return index
+    for index, line in enumerate(buggy_lines, start=1):
+        stripped = line.strip()
+        if not stripped or len(stripped) < 4:
+            continue
+        if target in stripped or stripped in target:
+            return index
+    return 0
+
+
+def _stated_line_numbers(code_location: str) -> list[int]:
+    """Extract line numbers that explicitly follow 第 / line / lines / connectors.
+
+    Only the head before the first colon is scanned, because models often append the
+    actual code after a colon and that code may contain digits that are not line numbers
+    (e.g. `Line 2: 'for i in range(1, 10)'`)."""
+    head = re.split(r"[:：]", code_location, maxsplit=1)[0]
+    nos: list[int] = []
+    for match in re.finditer(r"(?:第\s*(\d+)|lines?\s*(\d+))", head, re.IGNORECASE):
+        nos.append(int(match.group(1) or match.group(2)))
+    for match in re.finditer(r"(?:[、，,]\s*(\d+)|\sand\s+(\d+))", head, re.IGNORECASE):
+        nos.append(int(match.group(1) or match.group(2)))
+    return nos
+
+
+def _replace_first_line_number(code_location: str, old_no: int, new_no: int) -> str:
+    """Replace the first explicit line-number occurrence in code_location."""
+    pattern = re.compile(
+        rf"(第\s*){old_no}(\s*行?)|(\blines?\s*){old_no}\b",
+        re.IGNORECASE,
+    )
+
+    def _sub(match: re.Match[str]) -> str:
+        if match.group(1) is not None:
+            return f"{match.group(1)}{new_no}{match.group(2) or ''}"
+        return f"{match.group(3)}{new_no}"
+
+    new_loc, count = pattern.subn(_sub, code_location, count=1)
+    if count == 0:
+        return re.sub(r"\d+", str(new_no), code_location, count=1)
+    return new_loc
 
 
 def _repair_bug_cards_for_code(normalized: dict[str, Any], language: Language = "zh-Hant") -> dict[str, Any]:
@@ -2101,7 +2200,7 @@ if guess != secret_number:
             title="Bug 1：變數名稱不一致",
             error_type="NameError",
             teaching_concept="變數名稱必須完全一致",
-            code_location="第 9 行",
+            code_location="第 10 行",
             classroom_symptom="學生輸入數字後，程式停止並顯示 NameError。",
             guiding_questions=[
                 "錯誤訊息提到邊個變數名？",
@@ -2122,7 +2221,7 @@ if guess != secret_number:
             title="Bug 2：輸入文字未轉成數字",
             error_type="TypeError",
             teaching_concept="input() 回傳文字，要先轉成 int 先可以同數字比較",
-            code_location="第 6、12 行",
+            code_location="第 7、13 行",
             classroom_symptom="修正第一個 bug 後，程式會喺比較大小時出現 TypeError。",
             guiding_questions=[
                 "input() 讀入嚟嘅資料係文字定數字？",
@@ -2260,7 +2359,7 @@ if guess != secret_number:
             title="Bug 1: variable name mismatch",
             error_type="NameError",
             teaching_concept="Variable names must match exactly.",
-            code_location="line 9",
+            code_location="line 10",
             classroom_symptom="After students enter a number, the program stops and shows NameError.",
             guiding_questions=[
                 "Which variable name does the error message mention?",
@@ -2281,7 +2380,7 @@ if guess != secret_number:
             title="Bug 2: input text is not converted to a number",
             error_type="TypeError",
             teaching_concept="input() returns text, so convert it to int before comparing with a number.",
-            code_location="lines 6 and 12",
+            code_location="lines 7 and 13",
             classroom_symptom="After the first bug is fixed, the program raises TypeError during the size comparison.",
             guiding_questions=[
                 "Does input() return text or a number?",
