@@ -1,8 +1,14 @@
 # Python Debug Pack Generator
 
-![Python Debug Pack Generator preview](docs/images/readme-hero.svg)
+**English** | [繁體中文](README.zh-Hant.md)
 
-An AI-assisted, one-page teacher demo for turning a Python lesson idea into a classroom-ready debugging pack. It generates a lesson flow, master code, starter code, intentionally buggy code, teacher debug cards, live model output, and a local interactive runner.
+AI-assisted, one-page teacher demo for turning a Python lesson idea into a classroom-ready debugging pack. It generates a lesson flow, master code, starter code, intentionally buggy code, teacher debug cards, live model output, and a local interactive runner.
+
+These screenshots are captured from a real generated lesson pack:
+
+| Lesson Flow | Debug Cards | Interactive Runner |
+| --- | --- | --- |
+| ![Generated lesson flow](docs/images/readme-01-overview.png) | ![Teacher debug cards](docs/images/readme-02-debug-cards.png) | ![Interactive Python runner](docs/images/readme-03-runner.png) |
 
 The UI starts in English by default unless the browser language is Chinese. Users can still switch language from the top bar.
 
@@ -56,36 +62,6 @@ The variable names still use `DEEPSEEK_` because DeepSeek was the first provider
 - `POST /api/explain-error`
 
 The runner executes local demo code with a short timeout. Keep it on localhost; it is not a sandbox for untrusted public traffic.
-
-## 中文說明
-
-Python Debug Pack Generator 是一個給老師示範用的一頁式工具：輸入 Python 課堂主題後，它會生成教學流程、完整程式、學生起始程式、帶錯誤的程式、教師除錯卡、模型串流輸出，以及本機互動執行結果。
-
-介面會根據瀏覽器語言自動選擇英文或繁體中文，也可以在右上角手動切換。
-
-### 快速開始
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-Copy-Item .env.example .env
-uvicorn app.main:app --reload
-```
-
-打開 `http://127.0.0.1:8000`。
-
-### 更換 OpenAI 相容模型
-
-先把 `.env.example` 複製成 `.env`，再修改：
-
-```text
-DEEPSEEK_API_KEY=你的_api_key
-DEEPSEEK_BASE_URL=https://供應商_base_url
-DEEPSEEK_MODEL=模型名稱
-```
-
-如果供應商支援 OpenAI 風格的 `/chat/completions`，通常只要改 API key、base URL 和 model name，然後重新啟動 `uvicorn`。如果供應商不接受 `thinking` 或 `reasoning_effort` 之類的參數，則需要在 `app/generator.py` 調整請求 payload。
 
 ## License
 
