@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Python Debug Pack Generator</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="app-header">
+        <div>
+          <h1>Python Debug Pack Generator</h1>
+          <p id="appSubtitle">Three-part Python lessons + Teacher Debug Cards</p>
+        </div>
+        <div class="header-controls">
+          <button id="languageToggle" class="secondary-btn compact-btn" type="button" aria-label="Switch language to Chinese">中文</button>
+          <label class="theme-toggle" for="themeToggle">
+            <span id="themeLabel">Dark mode</span>
+            <input id="themeToggle" type="checkbox" role="switch" aria-label="Dark mode" />
+          </label>
+          <div class="header-status">
+            <span id="apiStatus" class="status-pill">API checking</span>
+            <span id="generateState" class="status-pill muted">Ready</span>
+          </div>
+        </div>
+      </header>
+
+      <main class="dashboard">
+        <aside id="inputPanel" class="input-panel" aria-label="Lesson input">
+          <form id="lessonForm">
+            <label class="field">
+              <span id="topicLabel">Lesson topic</span>
+              <textarea id="topic" rows="5" placeholder="Examples: number guessing game, BMI calculator, shopping discount calculator"></textarea>
+            </label>
+
+            <label class="field">
+              <span id="levelLabel">Grade level</span>
+              <select id="level">
+                <option value="初中">Junior secondary</option>
+                <option value="小學">Primary</option>
+                <option value="高中">Senior secondary</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span id="durationLabel">Lesson length</span>
+              <select id="duration">
+                <option value="1 小時">1 hour</option>
+                <option value="30 分鐘">30 minutes</option>
+                <option value="90 分鐘">90 minutes</option>
+              </select>
+            </label>
+
+            <p id="formError" class="form-error" role="alert"></p>
+
+            <div class="button-row">
+              <button id="generateBtn" class="primary-btn" type="submit">Generate Debug Pack</button>
+              <button id="resetBtn" class="secondary-btn" type="button">Clear</button>
+            </div>
+          </form>
+        </aside>
+
+        <section id="outputPanel" class="output-panel" aria-label="Generated lesson pack">
+          <div id="emptyState" class="empty-state">
+            <strong id="emptyTitle">Enter a Python lesson topic and generate a demo-ready teaching pack.</strong>
+            <span id="emptyHint">Try "number guessing game" or "BMI calculator" first.</span>
+          </div>
+
+          <div id="resultView" class="result-view hidden">
+            <div class="result-topline">
+              <div>
+                <h2 id="lessonTitle"></h2>
+                <div id="keyConcepts" class="chip-row"></div>
+              </div>
+              <button id="copyAllBtn" class="icon-btn" type="button" title="Copy all generated content">Copy All</button>
+            </div>
+
+            <section id="streamPanel" class="stream-panel hidden collapsed" aria-live="polite">
+              <div class="stream-header">
+                <button id="streamToggle" class="stream-toggle" type="button" aria-label="Toggle model stream" aria-expanded="false">−</button>
+                <span id="streamStatus" class="sr-only">Waiting for generation</span>
+              </div>
+              <pre id="modelStream" class="model-stream"></pre>
+            </section>
+
+            <nav id="tabs" class="tabs" aria-label="Result tabs"></nav>
+
+            <div id="tabContent" class="tab-content"></div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="status-bar">
+        <span id="lastGenerated">Last generated: -</span>
+        <span id="jsonStatus">JSON: waiting</span>
+        <span id="runStatus">Run: idle</span>
+      </footer>
+    </div>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

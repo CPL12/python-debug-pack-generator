@@ -1,0 +1,4 @@
+interface:
+  display_name: "Debug Pack Browser Sampler"
+  short_description: "Run browser sample QA for debug cards"
+  default_prompt: "Use $debug-pack-browser-sampler to run diverse browser-generated samples and catch false debug-card accusations."
