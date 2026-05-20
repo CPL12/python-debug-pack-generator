@@ -31,8 +31,7 @@ load_dotenv()
 
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-v4-flash"
-DEFAULT_THINKING_TYPE = "enabled"
-DEFAULT_REASONING_EFFORT = "high"
+DEFAULT_THINKING_TYPE = "disabled"
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 10.0
 DEFAULT_GENERATE_READ_TIMEOUT_SECONDS = 120.0
 DEFAULT_STREAM_READ_TIMEOUT_SECONDS = 180.0
@@ -123,6 +122,17 @@ JSON_FIELD_NAMES = (
 MISSING_FIELD_COMMA_RE = re.compile(
     r'([}\]"])\s*\n(\s*"(' + "|".join(re.escape(name) for name in JSON_FIELD_NAMES) + r')"\s*:)'
 )
+# Generic missing-comma patterns used as a fallback when the field-name
+# restricted repair above does not fix the model output.
+_GENERIC_KEY_COMMA_RE = re.compile(
+    r'([}\]"])(\s*\n\s*)("[^"\\\n]*(?:\\.[^"\\\n]*)*"\s*:)'
+)
+_ADJACENT_OBJECT_COMMA_RE = re.compile(r'(\})(\s*\n\s*)(\{)')
+# Leave the second string unconsumed via a lookahead so we still catch a
+# comma between strings 2 and 3 (and 3 and 4, ...) on a single pass.
+_ADJACENT_STRING_ELEMENT_COMMA_RE = re.compile(
+    r'("[^"\\\n]*(?:\\.[^"\\\n]*)*")(\s*\n\s*)(?="[^"\\\n]*(?:\\.[^"\\\n]*)*"(?!\s*:))'
+)
 
 _JSON_MISSING = object()
 _JSON_DECODER = json.JSONDecoder()
@@ -164,7 +174,6 @@ def api_status() -> dict[str, Any]:
         "base_url": os.getenv("DEEPSEEK_BASE_URL", DEFAULT_BASE_URL),
         "model": os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
         "thinking": DEFAULT_THINKING_TYPE,
-        "reasoning_effort": DEFAULT_REASONING_EFFORT,
     }
 
 
@@ -379,8 +388,7 @@ def _deepseek_payload(request: GeneratePackRequest, *, model: str, stream: bool)
             {"role": "user", "content": _build_prompt(request)},
         ],
         "response_format": {"type": "json_object"},
-        "thinking": {"type": DEFAULT_THINKING_TYPE},
-        "reasoning_effort": DEFAULT_REASONING_EFFORT,
+        "thinking": {"type": request.thinking},
     }
     if stream:
         payload["stream"] = True
@@ -418,7 +426,7 @@ def _lesson_flow_partial_events(content: str, emitted_sections: set[str]) -> lis
                 _stream_event(
                     "partial",
                     target="lesson_flow",
-                    section={"id": section_id, "value": value},
+                    section={"id": section_id, "value": _normalize_streamed_flow_value(value)},
                 )
             )
 
@@ -435,10 +443,16 @@ def _lesson_flow_partial_events(content: str, emitted_sections: set[str]) -> lis
         _stream_event(
             "partial",
             target="lesson_flow",
-            section={"id": RUN_SUGGESTIONS_SECTION_ID, "value": note},
+            section={"id": RUN_SUGGESTIONS_SECTION_ID, "value": _normalize_streamed_flow_value(note)},
         )
     )
     return events
+
+
+def _normalize_streamed_flow_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_normalize_descriptive_text(item) for item in value]
+    return _normalize_descriptive_text(value)
 
 
 def _json_object_value_start_for_key(text: str, key: str) -> int | None:
@@ -643,18 +657,46 @@ def _extract_json(content: str) -> dict[str, Any]:
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        repaired = _repair_missing_field_commas(cleaned)
-        if repaired != cleaned:
+        for stage_name, repair in (
+            ("known field comma", _repair_missing_field_commas),
+            ("generic missing comma", _repair_generic_missing_commas),
+        ):
+            repaired = repair(cleaned)
+            if repaired == cleaned:
+                continue
             try:
-                LOGGER.info("Repaired missing JSON field comma after model output parse error: %s", exc)
+                LOGGER.info(
+                    "Repaired JSON via %s after model output parse error: %s",
+                    stage_name,
+                    exc,
+                )
                 return json.loads(repaired)
             except json.JSONDecodeError:
-                pass
+                cleaned = repaired  # stack repairs across stages
         raise
 
 
 def _repair_missing_field_commas(content: str) -> str:
     return MISSING_FIELD_COMMA_RE.sub(r"\1,\n\2", content)
+
+
+def _repair_generic_missing_commas(content: str) -> str:
+    """Insert missing commas that the field-name-restricted repair did not catch.
+
+    Handles three shapes the model occasionally emits:
+      1. ``}|]|"`` followed by a newline and any quoted object key with ``:``.
+      2. ``}`` followed by a newline and ``{`` (objects adjacent in an array).
+      3. ``"..."`` followed by a newline and another ``"..."`` that is NOT a
+         key (no trailing ``:``) — i.e. adjacent string elements in an array.
+    """
+
+    repaired = _GENERIC_KEY_COMMA_RE.sub(r"\1,\2\3", content)
+    repaired = _ADJACENT_OBJECT_COMMA_RE.sub(r"\1,\2\3", repaired)
+    # The string-element pattern uses a lookahead for the trailing string,
+    # so only groups 1 and 2 are consumed; the second string stays in the
+    # unconsumed region for the next iteration of the scan.
+    repaired = _ADJACENT_STRING_ELEMENT_COMMA_RE.sub(r"\1,\2", repaired)
+    return repaired
 
 
 def _normalize_lesson_pack_data(data: dict[str, Any], language: Language = "zh-Hant") -> dict[str, Any]:
@@ -666,17 +708,17 @@ def _normalize_lesson_pack_data(data: dict[str, Any], language: Language = "zh-H
     normalized["buggy_code"] = _as_string(normalized.get("buggy_code"))
 
     flow = dict(normalized.get("lesson_flow") or {})
-    flow["warm_up"] = _as_string(flow.get("warm_up"))
-    flow["build_activity"] = _as_list(flow.get("build_activity"))
-    flow["debug_activity"] = _as_list(flow.get("debug_activity"))
-    flow["wrap_up"] = _as_string(flow.get("wrap_up"))
-    flow["teacher_notes"] = _as_list(flow.get("teacher_notes"))
+    flow["warm_up"] = _normalize_descriptive_text(flow.get("warm_up"))
+    flow["build_activity"] = [_normalize_descriptive_text(item) for item in _as_list(flow.get("build_activity"))]
+    flow["debug_activity"] = [_normalize_descriptive_text(item) for item in _as_list(flow.get("debug_activity"))]
+    flow["wrap_up"] = _normalize_descriptive_text(flow.get("wrap_up"))
+    flow["teacher_notes"] = [_normalize_descriptive_text(item) for item in _as_list(flow.get("teacher_notes"))]
     normalized["lesson_flow"] = flow
 
     run_suggestions = dict(normalized.get("run_suggestions") or {})
     run_suggestions["master_input"] = _as_string(run_suggestions.get("master_input"))
     run_suggestions["buggy_input"] = _as_string(run_suggestions.get("buggy_input"))
-    run_suggestions["note"] = _as_string(run_suggestions.get("note"))
+    run_suggestions["note"] = _normalize_descriptive_text(run_suggestions.get("note"))
     normalized["run_suggestions"] = run_suggestions
 
     cards: list[dict[str, Any]] = []
@@ -2108,6 +2150,41 @@ def _as_string(value: Any) -> str:
     if isinstance(value, dict):
         return json.dumps(value, ensure_ascii=False)
     return str(value)
+
+
+_ESCAPE_SEQUENCE_PATTERN = re.compile(r"\\([nrt\"'\\])")
+_ESCAPE_REPLACEMENTS = {
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    '"': '"',
+    "'": "'",
+    "\\": "\\",
+}
+
+
+def _normalize_descriptive_text(value: Any) -> str:
+    """Clean up descriptive prose fields the model sometimes over-escapes.
+
+    Handles two artifacts observed in run_suggestions.note and similar
+    fields: a wrapper of straight quotes (`"..."`) and literal escape
+    sequences like `\\n` that should have been real newlines.
+    """
+
+    text = _as_string(value)
+    if not text:
+        return text
+
+    stripped = text.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in ('"', "'"):
+        inner = stripped[1:-1]
+        if stripped[0] not in inner.replace("\\" + stripped[0], ""):
+            text = inner
+
+    if "\\" in text:
+        text = _ESCAPE_SEQUENCE_PATTERN.sub(lambda m: _ESCAPE_REPLACEMENTS[m.group(1)], text)
+
+    return text
 
 
 def _as_list(value: Any) -> list[Any]:

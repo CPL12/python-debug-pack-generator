@@ -15,36 +15,43 @@ from app.schemas import GeneratePackRequest
 
 
 class DeepSeekPayloadTests(unittest.TestCase):
-    def _request(self) -> GeneratePackRequest:
+    def _request(self, thinking="disabled") -> GeneratePackRequest:
         return GeneratePackRequest(
             topic="loops",
             level="小學",
             duration="30 分鐘",
             language="en",
+            thinking=thinking,
         )
 
-    def test_uses_v4_thinking_payload(self):
-        payload = _deepseek_payload(self._request(), model="deepseek-v4-flash", stream=False)
+    def test_uses_v4_nonthinking_payload(self):
+        payload = _deepseek_payload(self._request(thinking="disabled"), model="deepseek-v4-flash", stream=False)
 
         self.assertEqual(payload["model"], "deepseek-v4-flash")
-        self.assertEqual(payload["thinking"], {"type": "enabled"})
-        self.assertEqual(payload["reasoning_effort"], "high")
+        self.assertEqual(payload["thinking"], {"type": "disabled"})
+        self.assertNotIn("reasoning_effort", payload)
         self.assertEqual(payload["response_format"], {"type": "json_object"})
         self.assertNotIn("temperature", payload)
         self.assertNotIn("stream", payload)
 
-    def test_stream_payload_keeps_thinking_enabled(self):
-        payload = _deepseek_payload(self._request(), model="deepseek-v4-flash", stream=True)
+    def test_uses_v4_thinking_payload(self):
+        payload = _deepseek_payload(self._request(thinking="enabled"), model="deepseek-v4-flash", stream=False)
 
         self.assertEqual(payload["thinking"], {"type": "enabled"})
-        self.assertEqual(payload["reasoning_effort"], "high")
+        self.assertNotIn("reasoning_effort", payload)
+
+    def test_stream_payload_keeps_thinking_disabled(self):
+        payload = _deepseek_payload(self._request(thinking="disabled"), model="deepseek-v4-flash", stream=True)
+
+        self.assertEqual(payload["thinking"], {"type": "disabled"})
+        self.assertNotIn("reasoning_effort", payload)
         self.assertTrue(payload["stream"])
 
     def test_api_status_reports_thinking_mode(self):
         status = api_status()
 
-        self.assertEqual(status["thinking"], "enabled")
-        self.assertEqual(status["reasoning_effort"], "high")
+        self.assertEqual(status["thinking"], "disabled")
+        self.assertNotIn("reasoning_effort", status)
 
 
 class StreamingPartialTests(unittest.TestCase):
@@ -153,6 +160,134 @@ class JsonExtractionTests(unittest.TestCase):
 
         self.assertEqual(data["run_suggestions"]["master_input"], "1\n")
         self.assertEqual(data["run_suggestions"]["buggy_input"], "2\n")
+
+    def test_repairs_missing_comma_with_unknown_key(self):
+        # "custom_extra" is not in JSON_FIELD_NAMES, but the generic repair
+        # should still insert the comma so parsing succeeds.
+        content = (
+            '{"topic":"x",'
+            '\n"bug_cards":[{"id":"bug-1","title":"T"'
+            '\n"custom_extra":"value","error_type":"SyntaxError"}]}'
+        )
+
+        data = _extract_json(content)
+
+        card = data["bug_cards"][0]
+        self.assertEqual(card["title"], "T")
+        self.assertEqual(card["custom_extra"], "value")
+
+    def test_repairs_missing_comma_between_array_objects(self):
+        content = (
+            '{"bug_cards":['
+            '{"id":"bug-1","title":"A"}'
+            '\n{"id":"bug-2","title":"B"}'
+            ']}'
+        )
+
+        data = _extract_json(content)
+
+        self.assertEqual(len(data["bug_cards"]), 2)
+        self.assertEqual(data["bug_cards"][1]["id"], "bug-2")
+
+    def test_repairs_missing_comma_between_array_strings(self):
+        content = (
+            '{"lesson_flow":{"build_activity":['
+            '"Step one."'
+            '\n"Step two."'
+            '\n"Step three."'
+            ']}}'
+        )
+
+        data = _extract_json(content)
+
+        self.assertEqual(
+            data["lesson_flow"]["build_activity"],
+            ["Step one.", "Step two.", "Step three."],
+        )
+
+    def test_repair_stages_compose_across_failures(self):
+        # Combine two failure shapes that need different stages so the second
+        # repair must build on top of the first.
+        content = (
+            '{"bug_cards":['
+            '{"id":"bug-1","title":"A"}'
+            '\n{"id":"bug-2","title":"B","unknown_key":"v"'
+            '\n"error_type":"NameError"}'
+            ']}'
+        )
+
+        data = _extract_json(content)
+
+        self.assertEqual(data["bug_cards"][1]["unknown_key"], "v")
+        self.assertEqual(data["bug_cards"][1]["error_type"], "NameError")
+
+
+class DescriptiveTextNormalizationTests(unittest.TestCase):
+    def test_strips_wrapping_quotes_and_decodes_literal_newlines_in_note(self):
+        data = {
+            "key_concepts": [],
+            "master_code": "",
+            "starter_code": "",
+            "buggy_code": "",
+            "lesson_flow": {},
+            "run_suggestions": {
+                "master_input": "70\n1.75\n",
+                "buggy_input": "70\n1.75\n",
+                "note": "\"1. Run master_code with input.\\n2. Run buggy_code.\\n3. Compare outputs.\"",
+            },
+            "bug_cards": [],
+        }
+
+        normalized = _normalize_lesson_pack_data(data)
+
+        self.assertEqual(
+            normalized["run_suggestions"]["note"],
+            "1. Run master_code with input.\n2. Run buggy_code.\n3. Compare outputs.",
+        )
+
+    def test_normalizes_lesson_flow_text_fields(self):
+        data = {
+            "key_concepts": [],
+            "master_code": "",
+            "starter_code": "",
+            "buggy_code": "",
+            "lesson_flow": {
+                "warm_up": "\"Ask: what is BMI?\\nDiscuss for 2 minutes.\"",
+                "build_activity": ["Step 1.\\nStep 2."],
+                "debug_activity": ["Find error.\\nFix error."],
+                "wrap_up": "Recap.\\nAssign homework.",
+                "teacher_notes": ["Watch for confusion on line 5.\\nEncourage questions."],
+            },
+            "run_suggestions": {},
+            "bug_cards": [],
+        }
+
+        normalized = _normalize_lesson_pack_data(data)
+        flow = normalized["lesson_flow"]
+        self.assertEqual(flow["warm_up"], "Ask: what is BMI?\nDiscuss for 2 minutes.")
+        self.assertEqual(flow["wrap_up"], "Recap.\nAssign homework.")
+        self.assertEqual(flow["build_activity"], ["Step 1.\nStep 2."])
+        self.assertEqual(flow["debug_activity"], ["Find error.\nFix error."])
+        self.assertEqual(
+            flow["teacher_notes"], ["Watch for confusion on line 5.\nEncourage questions."]
+        )
+
+    def test_leaves_clean_text_untouched(self):
+        data = {
+            "key_concepts": [],
+            "master_code": "",
+            "starter_code": "",
+            "buggy_code": "",
+            "lesson_flow": {"warm_up": "Real newline\nalready here.", "build_activity": [], "debug_activity": [], "wrap_up": "", "teacher_notes": []},
+            "run_suggestions": {"note": "Already 'quoted' inside but not wrapped."},
+            "bug_cards": [],
+        }
+
+        normalized = _normalize_lesson_pack_data(data)
+        self.assertEqual(normalized["lesson_flow"]["warm_up"], "Real newline\nalready here.")
+        self.assertEqual(
+            normalized["run_suggestions"]["note"], "Already 'quoted' inside but not wrapped."
+        )
 
 
 class BugCardRepairTests(unittest.TestCase):
